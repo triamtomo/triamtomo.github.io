@@ -604,13 +604,55 @@ function downloadBackup(){
   URL.revokeObjectURL(url);
 }
 function importBackup(e){
-  const file = e.target.files[0]; if(!file) return;
+  const input = e.target;
+  const file = input.files && input.files[0];
+  if(!file) return;
+
+  const finish = ()=>{ input.value = ''; };
   const reader = new FileReader();
-  reader.onload = ()=>{
-    try{ state = JSON.parse(reader.result); saveState(); renderAll(); alert('Backup berhasil diimpor!'); }
-    catch(err){ alert('File backup tidak valid.'); }
+
+  reader.onload = function(){
+    try{
+      const imported = JSON.parse(reader.result);
+
+      // Backup harus berupa object JSON, bukan array atau data lain.
+      if(!imported || typeof imported !== 'object' || Array.isArray(imported)){
+        throw new Error('Format backup tidak valid');
+      }
+
+      // Validasi bagian data yang memang dipakai portfolio.
+      const arraySections = ['projects','certificates','techstack'];
+      for(const key of arraySections){
+        if(imported[key] !== undefined && !Array.isArray(imported[key])){
+          throw new Error('Struktur backup tidak valid');
+        }
+      }
+
+      // Pertahankan portfolio lama sebagai dasar.
+      // Hanya data yang memang ada di backup yang diperbarui.
+      const importedState = JSON.parse(JSON.stringify(state));
+      Object.keys(imported).forEach(key => {
+        importedState[key] = imported[key];
+      });
+
+      state = importedState;
+      saveState();
+      renderAll();
+      finish();
+      alert('✅ Backup berhasil diimpor! Data portfolio sudah diperbarui di perangkat ini.');
+    }catch(err){
+      console.error('Import backup error:', err);
+      finish();
+      alert('❌ File backup tidak valid atau rusak. Pastikan file berasal dari tombol "Unduh Backup".');
+    }
   };
-  reader.readAsText(file);
+
+  reader.onerror = function(){
+    finish();
+    alert('❌ File tidak dapat dibaca. Silakan coba pilih file backup lagi.');
+  };
+
+  reader.readAsText(file, 'UTF-8');
 }
 function resetData(){
   if(confirm('Reset semua data ke default? Perubahan yang belum di-backup akan hilang.')){
