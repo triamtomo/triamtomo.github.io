@@ -606,53 +606,46 @@ function downloadBackup(){
 function importBackup(e){
   const input = e.target;
   const file = input.files && input.files[0];
+
   if(!file) return;
 
-  const finish = ()=>{ input.value = ''; };
   const reader = new FileReader();
 
   reader.onload = function(){
     try{
       const imported = JSON.parse(reader.result);
 
-      // Backup harus berupa object JSON, bukan array atau data lain.
       if(!imported || typeof imported !== 'object' || Array.isArray(imported)){
         throw new Error('Format backup tidak valid');
       }
 
-      // Validasi bagian data yang memang dipakai portfolio.
-      const arraySections = ['projects','certificates','techstack'];
-      for(const key of arraySections){
-        if(imported[key] !== undefined && !Array.isArray(imported[key])){
-          throw new Error('Struktur backup tidak valid');
-        }
-      }
+      // Mempertahankan struktur backup asli portfolio.
+      state = imported;
 
-      // Pertahankan portfolio lama sebagai dasar.
-      // Hanya data yang memang ada di backup yang diperbarui.
-      const importedState = JSON.parse(JSON.stringify(state));
-      Object.keys(imported).forEach(key => {
-        importedState[key] = imported[key];
-      });
-
-      state = importedState;
       saveState();
       renderAll();
-      finish();
-      alert('✅ Backup berhasil diimpor! Data portfolio sudah diperbarui di perangkat ini.');
+
+      // Memungkinkan memilih file yang sama lagi.
+      input.value = '';
+
+      alert('✅ Backup berhasil diimpor!\n\nData portfolio sudah diperbarui.');
     }catch(err){
-      console.error('Import backup error:', err);
-      finish();
-      alert('❌ File backup tidak valid atau rusak. Pastikan file berasal dari tombol "Unduh Backup".');
+      console.error('Import Backup Error:', err);
+      input.value = '';
+
+      alert(
+        '❌ Backup gagal dibaca.\n\n' +
+        'Pastikan file yang dipilih adalah backup portfolio (.json).'
+      );
     }
   };
 
   reader.onerror = function(){
-    finish();
-    alert('❌ File tidak dapat dibaca. Silakan coba pilih file backup lagi.');
+    input.value = '';
+    alert('❌ File tidak dapat dibaca. Silakan coba lagi.');
   };
 
-  reader.readAsText(file, 'UTF-8');
+  reader.readAsText(file);
 }
 function resetData(){
   if(confirm('Reset semua data ke default? Perubahan yang belum di-backup akan hilang.')){
