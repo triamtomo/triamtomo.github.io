@@ -179,6 +179,19 @@
   .edit-toolbar.show{display:flex;}
   .edit-toolbar button{font-family:'Inter',sans-serif;font-size:0.8rem;font-weight:500;color:var(--text);background:var(--bg2);border:1px solid var(--line);padding:10px 16px;border-radius:10px;cursor:pointer;white-space:nowrap;}
   .edit-toolbar button:hover{border-color:var(--violet);}
+  .edit-toolbar .hint{font-family:'Inter',sans-serif;font-size:0.72rem;color:var(--muted);max-width:200px;line-height:1.4;background:var(--bg2);border:1px solid var(--line);padding:8px 10px;border-radius:8px;}
+
+  .hamburger{display:none;width:38px;height:38px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer;font-size:1.1rem;align-items:center;justify-content:center;}
+  @media(max-width:760px){
+    .hamburger{display:flex;}
+    .navlinks{position:fixed;top:76px;left:0;right:0;flex-direction:column;gap:0;max-height:0;overflow:hidden;background:var(--bg);border-bottom:1px solid var(--line);transition:max-height .25s ease;}
+    nav.nav-open .navlinks{max-height:280px;}
+    .navlinks button{width:100%;text-align:left;padding:14px 6vw;border-radius:0;}
+  }
+  :focus-visible{outline:2px solid var(--violet);outline-offset:2px;}
+  .save-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);z-index:120;background:var(--card);border:1px solid var(--line);color:var(--text);padding:10px 18px;border-radius:10px;font-family:'Inter',sans-serif;font-size:0.85rem;opacity:0;pointer-events:none;transition:all .25s ease;}
+  .save-toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .save-toast.error{border-color:#e5484d;color:#e5484d;}
 
   body.editing [data-bind]{outline:1px dashed rgba(139,92,246,0.5);outline-offset:3px;border-radius:4px;cursor:text;}
   body.editing [data-bind]:focus{outline:1px solid var(--violet);background:color-mix(in srgb, var(--violet) 6%, transparent);}
@@ -207,6 +220,7 @@
       <button data-target="kontak" onclick="showSection('kontak')">Kontak</button>
     </div>
     <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()" title="Ganti tema">🌙</button>
+    <button class="hamburger" id="hamburgerBtn" onclick="toggleMobileNav()" aria-label="Menu">☰</button>
   </div>
 </nav>
 
@@ -325,11 +339,14 @@
 
 <footer id="secretFooter">© 2026 Triam Tomo — Dibangun dari nol, bukan template.</footer>
 
+<div class="save-toast" id="saveToast"></div>
 <button class="edit-fab" id="editFab" onclick="toggleEdit()">✎ Edit Mode</button>
 <div class="edit-toolbar" id="editToolbar">
+  <button onclick="flushPendingSave()">💾 Simpan Sekarang</button>
   <button onclick="downloadBackup()">⬇ Unduh Backup</button>
   <button onclick="document.getElementById('importFile').click()">⬆ Impor Backup</button>
   <button onclick="resetData()">↺ Reset ke Default</button>
+  <p class="hint">Tersimpan otomatis di HP/browser ini. Buat pindah ke perangkat lain, pakai Unduh/Impor Backup.</p>
 </div>
 <input type="file" id="importFile" accept=".json" style="display:none" onchange="importBackup(event)">
 
@@ -425,6 +442,19 @@ function readStateFromIndexedDB(){
   });
 }
 
+let saveDebounceTimer = null;
+let saveToastTimer = null;
+
+function showSaveToast(ok){
+  const el = document.getElementById('saveToast');
+  if(!el) return;
+  el.textContent = ok ? '✓ Tersimpan' : '⚠ Gagal menyimpan, coba lagi';
+  el.classList.toggle('error', !ok);
+  el.classList.add('show');
+  clearTimeout(saveToastTimer);
+  saveToastTimer = setTimeout(()=>el.classList.remove('show'), 1800);
+}
+
 function saveState(){
   const serialized = JSON.stringify(state);
 
@@ -436,9 +466,26 @@ function saveState(){
   }
 
   // IndexedDB menjadi penyimpanan cadangan untuk data besar.
-  saveStateToIndexedDB(state).catch(err=>{
+  saveStateToIndexedDB(state).then(()=>{
+    showSaveToast(true);
+  }).catch(err=>{
     console.warn('IndexedDB gagal menyimpan:', err);
+    showSaveToast(false);
   });
+}
+
+// Nunda simpan 500ms setelah berhenti ngetik, biar nyimpen full state (termasuk
+// foto base64) gak jalan di SETIAP ketukan huruf — ini penyebab utama lag/gagal simpan di HP.
+function scheduleSave(){
+  clearTimeout(saveDebounceTimer);
+  saveDebounceTimer = setTimeout(saveState, 500);
+}
+
+// Paksa simpan sekarang juga (dipakai saat pindah tab/tutup halaman/klik tombol manual)
+function flushPendingSave(){
+  clearTimeout(saveDebounceTimer);
+  saveDebounceTimer = null;
+  saveState();
 }
 
 async function initPersistentStorage(){
@@ -481,7 +528,7 @@ document.addEventListener('input', e=>{
   const el = e.target;
   if(el.hasAttribute && el.hasAttribute('data-bind')){
     setPath(state, el.getAttribute('data-bind'), el.textContent);
-    saveState();
+    scheduleSave();
   }
 });
 
@@ -507,7 +554,7 @@ document.addEventListener('input', e=>{
   if(el.hasAttribute && el.hasAttribute('data-arr')){
     const path = el.getAttribute('data-arr'), idx = +el.getAttribute('data-idx');
     getPath(state, path)[idx] = el.textContent;
-    saveState();
+    scheduleSave();
   }
 });
 
@@ -556,17 +603,40 @@ function renderCerts(){
   grid.appendChild(addCard);
   state.certificates.length && animateCount(document.getElementById('statCerts'), state.certificates.length);
 }
+function compressImage(file, maxDim, quality){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = ()=>{ img.src = reader.result; };
+    reader.onerror = reject;
+    img.onload = ()=>{
+      let { width, height } = img;
+      if(width > height && width > maxDim){ height = Math.round(height*maxDim/width); width = maxDim; }
+      else if(height > maxDim){ width = Math.round(width*maxDim/height); height = maxDim; }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 function uploadCert(e, idx){
   const file = e.target.files[0]; if(!file) return;
-  const reader = new FileReader();
-  reader.onload = ()=>{ state.certificates[idx].image = reader.result; saveState(); renderCerts(); };
-  reader.readAsDataURL(file);
+  compressImage(file, 900, 0.75).then(dataUrl=>{
+    state.certificates[idx].image = dataUrl;
+    saveState();
+    renderCerts();
+  }).catch(()=>{ showSaveToast(false); });
 }
 function uploadAvatar(e){
   const file = e.target.files[0]; if(!file) return;
-  const reader = new FileReader();
-  reader.onload = ()=>{ state.profil.photo = reader.result; saveState(); renderAvatar(); };
-  reader.readAsDataURL(file);
+  compressImage(file, 500, 0.8).then(dataUrl=>{
+    state.profil.photo = dataUrl;
+    saveState();
+    renderAvatar();
+  }).catch(()=>{ showSaveToast(false); });
 }
 function renderAvatar(){
   const frame = document.getElementById('avatarFrame');
@@ -606,7 +676,7 @@ document.addEventListener('input', e=>{
     const parts = path.split('.');
     const arr = state[parts[0]]; const idx = +parts[1]; const field = parts[2];
     arr[idx][field] = el.textContent;
-    saveState();
+    scheduleSave();
     if(field==='title' && parts[0]==='projects'){
       const banner = el.closest('.proj-card').querySelector('.proj-banner');
       if(banner) banner.textContent = el.textContent;
@@ -798,6 +868,26 @@ if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches){
   });
 }
 document.getElementById('themeBtn').textContent = document.documentElement.getAttribute('data-theme')==='light' ? '☀️' : '🌙';
+
+function toggleMobileNav(){
+  document.querySelector('nav').classList.toggle('nav-open');
+}
+function closeMobileNav(){
+  document.querySelector('nav').classList.remove('nav-open');
+}
+document.querySelectorAll('.navlinks button[data-target]').forEach(btn=>{
+  btn.addEventListener('click', closeMobileNav);
+});
+
+// Jaring pengaman: pastikan simpanan yang lagi ditunda benar-benar tersimpan
+// sebelum halaman ditinggal/ditutup/pindah app — ini juga nangkep autocorrect di HP.
+window.addEventListener('pagehide', flushPendingSave);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'hidden') flushPendingSave();
+});
+document.addEventListener('blur', e=>{
+  if(e.target && e.target.isContentEditable) flushPendingSave();
+}, true);
 
 /* Edit mode tersembunyi: ketik "tomoedit" di keyboard (di mana saja di halaman) untuk memunculkan tombolnya */
 (function secretReveal(){
