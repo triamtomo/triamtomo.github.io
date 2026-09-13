@@ -342,14 +342,18 @@
 <div class="save-toast" id="saveToast"></div>
 <button class="edit-fab" id="editFab" onclick="toggleEdit()">✎ Edit Mode</button>
 <div class="edit-toolbar" id="editToolbar">
+  <p class="hint" id="syncStatus">⚪ Memeriksa status sync...</p>
+  <button onclick="loginForSync()">🔗 Login buat Sync</button>
+  <button onclick="logoutSync()">🚪 Logout Sync</button>
   <button onclick="flushPendingSave()">💾 Simpan Sekarang</button>
   <button onclick="downloadBackup()">⬇ Unduh Backup</button>
   <button onclick="document.getElementById('importFile').click()">⬆ Impor Backup</button>
   <button onclick="resetData()">↺ Reset ke Default</button>
-  <p class="hint">Tersimpan otomatis di HP/browser ini. Buat pindah ke perangkat lain, pakai Unduh/Impor Backup.</p>
+  <p class="hint">Login sekali di device manapun (pakai email &amp; password yang kamu daftarin di Supabase) biar semua editan otomatis kesinkron ke device lain.</p>
 </div>
 <input type="file" id="importFile" accept=".json" style="display:none" onchange="importBackup(event)">
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 const STORAGE_KEY = 'tomoPortfolioData';
 const THEME_KEY = 'tomoPortfolioTheme';
@@ -455,6 +459,96 @@ function showSaveToast(ok){
   saveToastTimer = setTimeout(()=>el.classList.remove('show'), 1800);
 }
 
+// ================== SUPABASE SYNC ==================
+const SUPABASE_URL = 'https://fasquccrmwpoemibixdw.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_b2HFfo7Rvj1bTkfBdMZ7Kg_IbzRCD-k';
+const supabaseClient = (typeof window.supabase !== 'undefined')
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
+async function isLoggedIn(){
+  if(!supabaseClient) return false;
+  const { data } = await supabaseClient.auth.getSession();
+  return !!(data && data.session);
+}
+
+async function updateSyncStatus(){
+  const el = document.getElementById('syncStatus');
+  if(!el) return;
+  const logged = await isLoggedIn();
+  el.textContent = logged
+    ? '🟢 Sync aktif — editan otomatis kekirim ke semua device'
+    : '⚪ Sync belum aktif — login dulu biar editan otomatis nyambung';
+}
+
+async function loginForSync(){
+  if(!supabaseClient) return;
+  const email = prompt('Email login Supabase kamu:');
+  if(!email) return;
+  const password = prompt('Password:');
+  if(!password) return;
+  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if(error){
+    alert('Login gagal: ' + error.message);
+  }else{
+    await updateSyncStatus();
+    flushPendingSave();
+  }
+}
+
+async function logoutSync(){
+  if(!supabaseClient) return;
+  await supabaseClient.auth.signOut();
+  await updateSyncStatus();
+}
+
+async function pushToSupabase(){
+  if(!supabaseClient) return;
+  const logged = await isLoggedIn();
+  if(!logged) return;
+  try{
+    await supabaseClient.from('portfolio').upsert({
+      id: 'main',
+      data: state,
+      updated_at: new Date().toISOString()
+    });
+  }catch(err){
+    console.warn('Gagal sync ke cloud:', err);
+  }
+}
+
+async function pullFromSupabase(){
+  if(!supabaseClient) return;
+  try{
+    const { data, error } = await supabaseClient
+      .from('portfolio').select('data').eq('id','main').single();
+    if(!error && data && data.data && Object.keys(data.data).length){
+      state = data.data;
+      renderAll();
+      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+      saveStateToIndexedDB(state).catch(()=>{});
+    }
+  }catch(err){
+    console.warn('Gagal ambil data cloud:', err);
+  }
+}
+
+function subscribeRealtime(){
+  if(!supabaseClient) return;
+  supabaseClient.channel('portfolio-sync')
+    .on('postgres_changes', { event:'UPDATE', schema:'public', table:'portfolio', filter:'id=eq.main' }, payload=>{
+      if(payload.new && payload.new.data){
+        state = payload.new.data;
+        renderAll();
+        try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+        saveStateToIndexedDB(state).catch(()=>{});
+        showSaveToast(true);
+      }
+    })
+    .subscribe();
+}
+// ================== END SUPABASE SYNC ==================
+
 function saveState(){
   const serialized = JSON.stringify(state);
 
@@ -468,6 +562,7 @@ function saveState(){
   // IndexedDB menjadi penyimpanan cadangan untuk data besar.
   saveStateToIndexedDB(state).then(()=>{
     showSaveToast(true);
+    pushToSupabase();
   }).catch(err=>{
     console.warn('IndexedDB gagal menyimpan:', err);
     showSaveToast(false);
@@ -508,6 +603,12 @@ async function initPersistentStorage(){
   }catch(err){
     console.warn('IndexedDB tidak dapat digunakan:', err);
   }
+
+  // Setelah data lokal siap, tarik versi terbaru dari cloud (kalau ada
+  // & kalau lebih lengkap dari data lokal), lalu dengarkan perubahan real-time.
+  await pullFromSupabase();
+  subscribeRealtime();
+  updateSyncStatus();
 }
 
 function getPath(obj, path){ return path.split('.').reduce((o,k)=>o?.[k], obj); }
